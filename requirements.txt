@@ -1,0 +1,16 @@
+#经测试在python 3.11.8下运行正常
+#pip install -r requirements.txt
+gensim==4.3.3
+hanlp==2.1.1
+jieba==0.42.1
+matplotlib>=3.3.0
+numpy>=1.19.0
+pandas==2.2.3
+pyvis==0.3.2
+scikit_learn>=0.24.0
+spacy==3.8.4
+transformers>=4.18.0
+python-dotenv==1.1.0
+torch>=1.10.0
+kneed>=0.7.0
+tqdm>=4.62.0

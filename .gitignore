@@ -1,0 +1,9 @@
+models/
+__pycache__/
+narrativeNetwork.html
+lib/
+venv
+temp.json
+tuple_frequency.xlsx
+model/
+node_modules/

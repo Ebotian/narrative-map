@@ -453,7 +453,7 @@ def main():
         cluster_algorithm='K-Means',
         min_cluster_size=5,
         min_samples=2)
-    result = processor.process(file_path='./data/test.xlsx')
+    result = processor.process(file_path=r'C:\Users\Lenovo\Desktop\narrative-map\data\test.xlsx')
 
     # 获取时间范围
     start_time, end_time = processor.get_time_range(result)

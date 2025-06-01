@@ -1,3 +1,5 @@
+import sys
+sys.setrecursionlimit(10000)
 import hanlp
 import gensim
 from dotenv import load_dotenv
@@ -13,6 +15,20 @@ import time
 # 添加全局缓存
 _GLOBAL_TOKENIZER = None
 _GLOBAL_WORD_VECTORS = None
+
+try:
+    import cupy as np
+    GPU_AVAILABLE = True
+except ImportError:
+    import numpy as np
+    GPU_AVAILABLE = False
+
+try:
+    from cuml.cluster import KMeans as cuKMeans
+    CUMl_AVAILABLE = True
+except ImportError:
+    from sklearn.cluster import KMeans
+    CUMl_AVAILABLE = False
 
 
 class nonNEsKMeansMapper:
@@ -33,7 +49,8 @@ class nonNEsKMeansMapper:
             print("首次加载HanLP分词器...")
             start_time = time.time()
             _GLOBAL_TOKENIZER = hanlp.load(
-                hanlp.pretrained.mtl.CLOSE_TOK_POS_NER_SRL_DEP_SDP_CON_ELECTRA_BASE_ZH)
+                hanlp.pretrained.mtl.CLOSE_TOK_POS_NER_SRL_DEP_SDP_CON_ELECTRA_BASE_ZH
+                )
             print(f"加载HanLP分词器完成，耗时: {time.time() - start_time:.2f}秒")
         self.tokenizer = _GLOBAL_TOKENIZER
 
@@ -49,7 +66,7 @@ class nonNEsKMeansMapper:
         self._stop_words = set()
         stop_words_path = os.environ.get(
             "STOP_WORDS_PATH",
-            "/home/ebit/LMZ/src/model/hit_stopwords.txt")
+            r"C:\Users\Lenovo\Desktop\narrative-map\src\model\hit_stopwords.txt")
         try:
             with open(stop_words_path, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -85,20 +102,39 @@ class nonNEsKMeansMapper:
 
     # 计算词频
     def _generateWeightDict(self):
+        import re
         # 用于存储原始计数
         raw_counts = {}
         total_tokens = 0
 
+        # 自动截断超长句子
+        def safe_sentences(sentences, max_len=200):
+            safe = []
+            for sent in sentences:
+                if len(sent) > max_len:
+                    parts = re.split(r'[，。！？；;,.!?]', sent)
+                    for part in parts:
+                        if part.strip():
+                            safe.append(part.strip())
+                else:
+                    safe.append(sent)
+            return safe
+
         for idx, item_list in self.non_NE_dict.items():
             for i, token_list in enumerate(item_list):
                 phrase = token_list[0]
-                # 使用HanLP对短语进行分词
-                result = self.tokenizer(phrase)
-                # 获取分词结果
-                tokens = result['tok/fine']
+                # 自动截断超长短语
+                safe_phrases = safe_sentences([phrase])
+                tokens = []
+                for safe_phrase in safe_phrases:
+                    try:
+                        result = self.tokenizer(safe_phrase)
+                        tokens.extend(result['tok/fine'])
+                    except RecursionError:
+                        print(f"跳过超长或异常短语: {safe_phrase}")
+                        continue
 
                 # 将分词信息保存到non_NE_dict中
-                # 创建一个新的元组，包含原始信息和分词结果
                 updated_list = [
                     token_list[0],
                     token_list[1],
@@ -135,7 +171,7 @@ class nonNEsKMeansMapper:
                 start_time = time.time()
                 model_path = os.environ.get(
                     "WORD_VECTOR_PATH",
-                    r"/home/ebit/LMZ/src/model/sgns.wiki.word")
+                    r"C:\Users\Lenovo\Desktop\narrative-map\src\model\sgns.weibo.word")
                 _GLOBAL_WORD_VECTORS = gensim.models.KeyedVectors.load_word2vec_format(
                     model_path, binary=False, encoding='utf-8')
                 print(f"加载词向量模型完成，耗时: {time.time() - start_time:.2f}秒")
@@ -209,68 +245,57 @@ class nonNEsKMeansMapper:
 
         # 确定最佳K值 (优化版)
         if self.if_auto_k:
-            # 限制样本数量，以减少计算量
             max_samples = 1000
             if len(vectors) > max_samples:
-                # 随机抽样进行K值评估
-                indices = np.random.choice(
-                    len(vectors), max_samples, replace=False)
+                indices = np.random.choice(len(vectors), max_samples, replace=False)
                 sample_vectors = vectors[indices]
             else:
                 sample_vectors = vectors
 
-            # 限制K的搜索范围，避免不必要的计算
-            # 使用平方根法则限制K，最大不超过20
             max_k = min(max(self.min_k, int(np.sqrt(len(sample_vectors)))), 20)
             best_k = self.min_k
             best_score = -1
-
-            # 使用二分搜索而不是线性搜索
-            k_values = list(range(self.min_k, max_k + 1,
-                            max(1, (max_k - self.min_k) // 5)))
+            k_values = list(range(self.min_k, max_k + 1, max(1, (max_k - self.min_k) // 5)))
             if max_k not in k_values:
                 k_values.append(max_k)
 
             for k in k_values:
                 try:
-                    # 减少KMeans的迭代次数和初始化次数
-                    kmeans = KMeans(
-                        n_clusters=k,
-                        random_state=42,
-                        max_iter=100,
-                        n_init=3)
-                    clusters = kmeans.fit_predict(sample_vectors)
-
-                    # 对于大样本，只使用部分样本计算轮廓系数
-                    if len(sample_vectors) > 500:
-                        subsample_indices = np.random.choice(
-                            len(sample_vectors), 500, replace=False)
-                        score = silhouette_score(
-                            sample_vectors[subsample_indices],
-                            clusters[subsample_indices])
+                    if CUMl_AVAILABLE:
+                        kmeans = cuKMeans(n_clusters=k, random_state=42, max_iter=100)
+                        clusters = kmeans.fit_predict(sample_vectors)
+                        clusters = clusters.get() if hasattr(clusters, 'get') else clusters
                     else:
-                        score = silhouette_score(sample_vectors, clusters)
-
+                        kmeans = KMeans(n_clusters=k, random_state=42, max_iter=100, n_init=3)
+                        clusters = kmeans.fit_predict(sample_vectors)
+                    # 轮廓系数用CPU计算
+                    import numpy as ncpu
+                    clusters_cpu = ncpu.array(clusters)
+                    sample_vectors_cpu = ncpu.array(sample_vectors)
+                    if len(sample_vectors_cpu) > 500:
+                        subsample_indices = ncpu.random.choice(len(sample_vectors_cpu), 500, replace=False)
+                        score = silhouette_score(sample_vectors_cpu[subsample_indices], clusters_cpu[subsample_indices])
+                    else:
+                        score = silhouette_score(sample_vectors_cpu, clusters_cpu)
                     print(f"K={k}的轮廓系数: {score}")
-
                     if score > best_score:
                         best_score = score
                         best_k = k
                 except Exception as e:
                     print(f"计算K={k}时出错: {e}")
-
             print(f"最佳K值: {best_k}")
         else:
             best_k = self.min_k
             print(f"使用指定的K值: {best_k}")
 
         # 使用最佳K值进行聚类 (减少迭代次数)
-        kmeans = KMeans(
-            n_clusters=best_k,
-            random_state=42,
-            max_iter=100,
-            n_init=2)
-        clusters = kmeans.fit_predict(vectors)
+        if CUMl_AVAILABLE:
+            kmeans = cuKMeans(n_clusters=best_k, random_state=42, max_iter=100)
+            clusters = kmeans.fit_predict(vectors)
+            clusters = clusters.get() if hasattr(clusters, 'get') else clusters
+        else:
+            kmeans = KMeans(n_clusters=best_k, random_state=42, max_iter=100, n_init=2)
+            clusters = kmeans.fit_predict(vectors)
         print(f"聚类结果: {clusters}")
 
         # 为每个簇提取标签

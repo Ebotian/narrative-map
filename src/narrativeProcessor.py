@@ -8,6 +8,7 @@ from NER import ChineseNER
 from sliceSentences import ChineseSentenceSegmenter
 from nonNEsKMeansMapper import nonNEsKMeansMapper
 from nonNEsHDBSCANMapper import nonNEsHDBSCANMapper
+from tqdm import tqdm
 
 
 class NarrativeProcessor:
@@ -36,9 +37,10 @@ class NarrativeProcessor:
 
     # 将命名实体映射到SRL的参数中
     def mappingNEs(self, ner_data, srl_data):
+        from tqdm import tqdm
         results = {}
 
-        for idx in ner_data:
+        for idx in tqdm(ner_data, desc="实体词映射中", total=len(ner_data)):
             sentence_ner = ner_data[idx]
             sentence_srl = srl_data.get(idx, [])
             original_text = sentence_ner['original_text']
@@ -86,9 +88,10 @@ class NarrativeProcessor:
 
     # 提取三元组，过滤只包含ARG0, ARG1和PRED的结果
     def filterMappingResults(self, mapResult):
+        from tqdm import tqdm
         filtered_results = {}
 
-        for idx, sentence_data in mapResult.items():
+        for idx, sentence_data in tqdm(mapResult.items(), desc="三元组过滤中", total=len(mapResult)):
             filtered_srl_mappings = []
 
             for mapping in sentence_data['srl_mappings']:
@@ -137,7 +140,7 @@ class NarrativeProcessor:
             all_sentences = []
 
             # 对数据框中的每一行进行处理
-            for idx, row in data_df.iterrows():
+            for idx, row in tqdm(data_df.iterrows(), total=len(data_df), desc="分句中"):
                 text = row[text_column]
                 time_info = row[time_column] if time_column in data_df.columns else None
 
@@ -158,7 +161,7 @@ class NarrativeProcessor:
         else:
             all_sentences = []
             # 如果不需要分句，直接使用原始数据框
-            for idx, row in data_df.iterrows():
+            for idx, row in tqdm(data_df.iterrows(), total=len(data_df), desc="收集句子"):
                 all_sentences.append({
                     'original_index': idx,
                     'sentence': row[text_column],
@@ -168,17 +171,23 @@ class NarrativeProcessor:
             print('共计{}条句子'.format(len(sentences_df)))
 
         # 分别进行NER和SRL步骤
+        print("命名实体识别进程开始！")
+        # 如需进度条，请在 NER.py 的 analyze 方法内部实现 tqdm
         ner_data = ChineseNER().analyze(
             sentences_df,
             text_column='sentence',
             time_column='time')
         print(f"命名实体识别进程完成！")
+        print("语义角色标注进程开始！")
+        # 如需进度条，请在 SRL.py 的 analyze 方法内部实现 tqdm
         srl_data = ChineseSRL().analyze(sentences_df, text_column='sentence')
         print(f"语义角色标注进程完成！")
 
         # 执行映射
+        print("实体词映射进程开始！")
         mapResult = self.mappingNEs(ner_data, srl_data)  # 先映射实体词
         print(f"实体词映射完成！")
+        print("三元组过滤进程开始！")
         res = self.filterMappingResults(mapResult)  # 过滤出同时包含ARG0, ARG1和PRED的结果
         print(f"过滤出三元组{len(res)}条！")
         if self.cluster_algorithm == 'K-Means':
@@ -191,13 +200,15 @@ class NarrativeProcessor:
                 input_data=res,
                 min_cluster_size=self.min_cluster_size,
                 min_samples=self.min_samples)
+        print("非实体词降维与聚类进程开始！")
         processedData = mapResult.process()  # 非实体词降维，映射未映射到命名实体的ARG0和ARG1参数
         print(f"非实体词映射且降维完成！")
 
         # 提取叙事三元组：ARG0, PRED, ARG1, timeline
         narrative_triples = {}
         i = 0
-        for idx, sentence_data in processedData.items():
+        print("三元组提取进程开始！")
+        for idx, sentence_data in tqdm(processedData.items(), desc="三元组提取", total=len(processedData)):
             # 使用sentences_df中存储的时间信息
             timeline = sentence_data['time']
             for srl_mapping in sentence_data['srl_mappings']:
@@ -210,6 +221,7 @@ class NarrativeProcessor:
                         role_dict[role] = (text, ner_info)
                 narrative_triples[i] = role_dict
                 i += 1
+        print("三元组提取完成！")
         return narrative_triples
 
     # 将narrative_triples转换为JSON格式，支持时间筛选
@@ -453,11 +465,12 @@ def main():
         cluster_algorithm='K-Means',
         min_cluster_size=5,
         min_samples=2)
-    result = processor.process(file_path=r'C:\Users\Lenovo\Desktop\narrative-map\data\test.xlsx')
+    result = processor.process(file_path=r'/home/ebit/narrative-map/data/coco.xlsx')
 
     # 获取时间范围
     start_time, end_time = processor.get_time_range(result)
     print(f"数据时间范围: {start_time} 至 {end_time}")
+
 
     # 将结果转换为JSON并保存
     json_data = processor.to_json(

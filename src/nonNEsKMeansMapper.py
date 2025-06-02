@@ -66,7 +66,7 @@ class nonNEsKMeansMapper:
         self._stop_words = set()
         stop_words_path = os.environ.get(
             "STOP_WORDS_PATH",
-            r"C:\Users\Lenovo\Desktop\narrative-map\src\model\hit_stopwords.txt")
+            r"/home/ebit/narrative-map/src/model/hit_stopwords.txt")
         try:
             with open(stop_words_path, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -171,7 +171,7 @@ class nonNEsKMeansMapper:
                 start_time = time.time()
                 model_path = os.environ.get(
                     "WORD_VECTOR_PATH",
-                    r"C:\Users\Lenovo\Desktop\narrative-map\src\model\sgns.weibo.word")
+                    r"/home/ebit/narrative-map/src/model/sgns.weibo.word")
                 _GLOBAL_WORD_VECTORS = gensim.models.KeyedVectors.load_word2vec_format(
                     model_path, binary=False, encoding='utf-8')
                 print(f"加载词向量模型完成，耗时: {time.time() - start_time:.2f}秒")
@@ -233,26 +233,32 @@ class nonNEsKMeansMapper:
 
     # 对词向量进行K-means聚类（优化版）
     def nonNEsCluster(self):
+        import cupy as cp
+        from cuml.cluster import KMeans as cuKMeans
+        from tqdm import tqdm
+        import torch
+        import multiprocessing as mp
         # 检查词向量数量是否足够进行聚类
         if not self.vector_dict or len(self.vector_dict) < self.min_k:
             print(f"词向量数量不足: {len(self.vector_dict)}")
             return {}
 
-        # 准备数据
+        # 准备数据（全部转为cupy数组）
         keys = list(self.vector_dict.keys())
-        vectors = np.array([self.vector_dict[k]['vector'] for k in keys])
+        vectors = cp.array([self.vector_dict[k]['vector'] for k in keys])
         phrases = [self.vector_dict[k]['phrase'] for k in keys]
 
         # 确定最佳K值 (优化版)
         if self.if_auto_k:
             max_samples = 1000
+            min_samples = 8
             if len(vectors) > max_samples:
-                indices = np.random.choice(len(vectors), max_samples, replace=False)
+                indices = cp.random.choice(len(vectors), max_samples, replace=False)
                 sample_vectors = vectors[indices]
             else:
                 sample_vectors = vectors
 
-            max_k = min(max(self.min_k, int(np.sqrt(len(sample_vectors)))), 20)
+            max_k = min(max(self.min_k, int(cp.sqrt(len(sample_vectors)))), 20)
             best_k = self.min_k
             best_score = -1
             k_values = list(range(self.min_k, max_k + 1, max(1, (max_k - self.min_k) // 5)))
@@ -260,49 +266,85 @@ class nonNEsKMeansMapper:
                 k_values.append(max_k)
 
             for k in k_values:
-                try:
-                    if CUMl_AVAILABLE:
-                        kmeans = cuKMeans(n_clusters=k, random_state=42, max_iter=100)
-                        clusters = kmeans.fit_predict(sample_vectors)
-                        clusters = clusters.get() if hasattr(clusters, 'get') else clusters
-                    else:
-                        kmeans = KMeans(n_clusters=k, random_state=42, max_iter=100, n_init=3)
-                        clusters = kmeans.fit_predict(sample_vectors)
-                    # 轮廓系数用CPU计算
-                    import numpy as ncpu
-                    clusters_cpu = ncpu.array(clusters)
-                    sample_vectors_cpu = ncpu.array(sample_vectors)
-                    if len(sample_vectors_cpu) > 500:
-                        subsample_indices = ncpu.random.choice(len(sample_vectors_cpu), 500, replace=False)
-                        score = silhouette_score(sample_vectors_cpu[subsample_indices], clusters_cpu[subsample_indices])
-                    else:
-                        score = silhouette_score(sample_vectors_cpu, clusters_cpu)
-                    print(f"K={k}的轮廓系数: {score}")
-                    if score > best_score:
-                        best_score = score
-                        best_k = k
-                except Exception as e:
-                    print(f"计算K={k}时出错: {e}")
+                success = False
+                cur_try = 0
+                cur_samples = len(sample_vectors)
+                while not success and cur_try < 3 and cur_samples >= min_samples:
+                    try:
+                        ctx = mp.get_context('spawn')
+                        with ctx.Pool(1) as pool:
+                            clusters = pool.apply(self._process_kmeans, (sample_vectors[:cur_samples], phrases[:cur_samples], k))
+                        # 轮廓系数用CPU计算
+                        import numpy as ncpu
+                        clusters_cpu = ncpu.array(clusters)
+                        sample_vectors_cpu = ncpu.array(sample_vectors[:cur_samples].get())
+                        if len(sample_vectors_cpu) > 500:
+                            subsample_indices = ncpu.random.choice(len(sample_vectors_cpu), 500, replace=False)
+                            score = silhouette_score(sample_vectors_cpu[subsample_indices], clusters_cpu[subsample_indices])
+                        else:
+                            score = silhouette_score(sample_vectors_cpu, clusters_cpu)
+                        print(f"K={k}的轮廓系数: {score}")
+                        if score > best_score:
+                            best_score = score
+                            best_k = k
+                        success = True
+                    except RuntimeError as e:
+                        if 'CUDA out of memory' in str(e):
+                            print(f"[警告] CUDA OOM, K={k} 聚类采样数 {cur_samples} -> {max(cur_samples//2, min_samples)}，重试 {cur_try+1}/3 (多进程)")
+                            import torch; torch.cuda.empty_cache()
+                            import time; time.sleep(2)
+                            cur_samples = max(cur_samples // 2, min_samples)
+                            cur_try += 1
+                            if cur_samples < min_samples:
+                                print(f"[错误] K={k} 聚类采样数已降到最小{min_samples}仍然OOM，跳过该K值")
+                                break
+                        else:
+                            raise e
+                if not success:
+                    print(f"K={k} 聚类多次OOM，跳过该K值")
             print(f"最佳K值: {best_k}")
         else:
             best_k = self.min_k
             print(f"使用指定的K值: {best_k}")
 
-        # 使用最佳K值进行聚类 (减少迭代次数)
-        if CUMl_AVAILABLE:
-            kmeans = cuKMeans(n_clusters=best_k, random_state=42, max_iter=100)
-            clusters = kmeans.fit_predict(vectors)
-            clusters = clusters.get() if hasattr(clusters, 'get') else clusters
-        else:
-            kmeans = KMeans(n_clusters=best_k, random_state=42, max_iter=100, n_init=2)
-            clusters = kmeans.fit_predict(vectors)
-        print(f"聚类结果: {clusters}")
+        # 使用最佳K值进行聚类 (全部GPU, 多进程)
+        success = False
+        cur_try = 0
+        cur_samples = len(vectors)
+        min_samples = 8
+        clusters = None
+        while not success and cur_try < 3 and cur_samples >= min_samples:
+            try:
+                ctx = mp.get_context('spawn')
+                with ctx.Pool(1) as pool:
+                    clusters = pool.apply(self._process_kmeans, (vectors[:cur_samples], phrases[:cur_samples], best_k))
+                print(f"聚类结果: {clusters}")
+                success = True
+            except RuntimeError as e:
+                if 'CUDA out of memory' in str(e):
+                    print(f"[警告] CUDA OOM, KMeans 聚类采样数 {cur_samples} -> {max(cur_samples//2, min_samples)}，重试 {cur_try+1}/3 (多进程)")
+                    import torch; torch.cuda.empty_cache()
+                    import time; time.sleep(2)
+                    cur_samples = max(cur_samples // 2, min_samples)
+                    cur_try += 1
+                    if cur_samples < min_samples:
+                        print(f"[错误] KMeans 聚类采样数已降到最小{min_samples}仍然OOM，放弃聚类！")
+                        break
+                else:
+                    raise e
+        if not success:
+            print("KMeans 聚类多次OOM，放弃聚类！")
+            return {}
 
         # 为每个簇提取标签
         cluster_phrases = {}
-        for i in range(best_k):
-            cluster_idx = np.where(clusters == i)[0]
-            cluster_phrases[i] = [phrases[idx] for idx in cluster_idx]
+        import numpy as ncpu  # 保证后续操作用 numpy
+        # 确保 clusters 一定是 numpy.ndarray
+        if not isinstance(clusters, ncpu.ndarray):
+            clusters = ncpu.array(clusters)
+        for i in tqdm(range(best_k), desc="提取每个簇的短语"):
+            cluster_idx = ncpu.where(clusters == i)[0]
+            cluster_phrases[i] = [phrases[int(idx)] for idx in cluster_idx]
 
         # 根据选择的方法提取标签
         if hasattr(self, 'label_method') and self.label_method in [
@@ -310,7 +352,7 @@ class nonNEsKMeansMapper:
             # 使用对应的标签提取方法
             if self.label_method == "optimized":
                 word_vectors = {}
-                for word, vec in self.vector_dict.items():
+                for word, vec in tqdm(self.vector_dict.items(), desc="收集词向量"):
                     if isinstance(vec, dict) and 'vector' in vec:
                         continue  # 跳过短语向量
                     word_vectors[word] = vec
@@ -320,7 +362,7 @@ class nonNEsKMeansMapper:
                 cluster_labels = self.extract_tfidf_labels(cluster_phrases)
             else:  # hybrid
                 word_vectors = {}
-                for word, vec in self.vector_dict.items():
+                for word, vec in tqdm(self.vector_dict.items(), desc="收集词向量"):
                     if isinstance(vec, dict) and 'vector' in vec:
                         continue  # 跳过短语向量
                     word_vectors[word] = vec
@@ -334,11 +376,11 @@ class nonNEsKMeansMapper:
 
         # 使用dict.get而不是嵌套循环来提高映射效率
         phrase_to_cluster = {}
-        for cluster_id, phrases_list in cluster_phrases.items():
+        for cluster_id, phrases_list in tqdm(cluster_phrases.items(), desc="建立短语到簇的映射"):
             for phrase in phrases_list:
                 phrase_to_cluster[phrase] = cluster_id
 
-        for idx, item_list in self.output_data.items():
+        for idx, item_list in tqdm(self.output_data.items(), desc="更新SRL映射"):
             for i, token_list in enumerate(item_list['srl_mappings']):
                 for j, phrase_list in enumerate(token_list):
                     phrase = phrase_list[0]
@@ -693,6 +735,25 @@ class nonNEsKMeansMapper:
 
         return result2
 
+    def _process_kmeans(self, vectors, phrases, best_k):
+        import cupy as cp
+        from cuml.cluster import KMeans as cuKMeans
+        from tqdm import tqdm
+        import torch
+        import gc
+        clusters = None
+        try:
+            kmeans = cuKMeans(n_clusters=best_k, random_state=42, max_iter=100)
+            clusters = kmeans.fit_predict(vectors)
+            result = clusters.get() if hasattr(clusters, 'get') else clusters
+            del kmeans, clusters
+            torch.cuda.empty_cache()
+            gc.collect()
+        except RuntimeError as e:
+            torch.cuda.empty_cache()
+            gc.collect()
+            raise e
+        return result
 
 def main():
     tokens_dict = {

@@ -40,22 +40,30 @@ export default {
     const formatNodes = (nodesData) => {
       if (!nodesData) return [];
       return nodesData.map(node => {
-        // 生成时间戳信息
-        let timestampsInfo = '';
-        if (node.timestamps && node.timestamps.length > 0) {
-          timestampsInfo = '<br><br><strong>时间点:</strong><br>' +
-            node.timestamps.map(ts => new Date(ts).toLocaleString('zh-CN')).join('<br>');
+        // 自动换行长标签，防止字符重叠
+        let label = node.label;
+        if (label && label.length > 10) {
+          // 每10字符插入换行符
+          label = label.replace(/(.{10})/g, '$1<br>');
         }
+        // 限制最大显示行数，超出用省略号
+        const maxLines = 4;
+        let lines = label.split('<br>');
+        if (lines.length > maxLines) {
+          label = lines.slice(0, maxLines).join('<br>') + '<br>...';
+        }
+        // 若label为空，给一个空格防止vis-network渲染bug
+        if (!label) label = ' ';
 
         return {
           id: node.id,
-          label: node.label,
+          label: label, // 使用多行label，限制最大行数
           value: node.value,
           shape: "dot",
           color: getNodeColor(node.type),
           borderWidth: 2,
-          font: { color: "black" },
-          title: `${node.id}\n${node.value}\n${node.type}`
+          font: { color: "black", multi: 'html', margin: 18, size: 16, face: 'Arial', vadjust: 0 },
+          title: `${node.id}\n类型: ${node.type}\n频次: ${node.value}` // 简化tooltip内容，去掉时间点
         };
       });
     };
@@ -71,19 +79,19 @@ export default {
           count = parseInt(match[1]);
         }
 
-        // 生成时间戳信息
+        // 生成时间戳信息（纯文本换行）
         let timestampsInfo = '';
         if (edge.timestamps && edge.timestamps.length > 0) {
-          timestampsInfo = '<br><br><strong>发生时间:</strong><br>' +
-            edge.timestamps.map(ts => new Date(ts).toLocaleString('zh-CN')).join('<br>');
+          timestampsInfo = '\n\n发生时间:\n' +
+            edge.timestamps.map(ts => new Date(ts).toLocaleString('zh-CN')).join('\n');
         }
 
         return {
           id: `${edge.from}_${edge.to}_${index}`,
           from: edge.from,
           to: edge.to,
-          label: label,
-          title: `${edge.from}->-${edge.to}(${index})\n${label}`,
+          label: '', // 不直接显示label
+          title: `${edge.from}->-${edge.to}(${index})\n${label}` + timestampsInfo, // 悬停时显示label和时间
           color: "#666666",
           width: 0.15 + count * 0.05,
           arrows: { to: { enabled: true, scaleFactor: 0.5 } },
@@ -136,7 +144,14 @@ export default {
               "min": 10,
               "max": 30
             },
-            "margin": 10 // 节点边距
+            "margin": 50, // 再次增大节点间距，强制拉开节点
+            "font": {
+              "margin": 18, // 增大字体边距
+              "multi": 'html',
+              "size": 16,
+              "face": 'Arial',
+              "vadjust": 0
+            }
           },
           "edges": {
             "hoverWidth": 2,
@@ -148,15 +163,17 @@ export default {
           "physics": {
             "enabled": true,
             "stabilization": {
-              "iterations": 150,
+              "iterations": 200,
               "updateInterval": 25
             },
             "barnesHut": {
-              "gravitationalConstant": -5000, // 增加引力使节点更紧凑
-              "springLength": 150, // 减少弹簧长度
-              "springConstant": 0.08, // 增加弹簧常数
-              "damping": 0.3
-            }
+              "gravitationalConstant": -8000, // 更强斥力，拉开节点
+              "springLength": 250, // 更长弹簧，节点距离更大
+              "springConstant": 0.08,
+              "damping": 0.3,
+              "avoidOverlap": 1
+            },
+            "minVelocity": 0.5 // 提高收敛速度，防止节点堆积
           },
           "layout": {
             "improvedLayout": true
@@ -239,15 +256,19 @@ export default {
   position: relative;
   flex: 1;
   height: 100%;
-  min-height: 0; /* 允许flex容器收缩 */
+  min-height: 0;
+  /* 允许flex容器收缩 */
 }
 
 .vis-network {
   width: 100%;
   height: 100%;
-  min-height: 300px; /* 保留最小高度但更小 */
+  min-height: 300px;
+  /* 保留最小高度但更小 */
   background-color: #ffffff;
   border: 1px solid #dee2e6;
+  /* 防止label被裁剪 */
+  overflow: visible;
 }
 
 .loading-overlay {

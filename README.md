@@ -1,5 +1,17 @@
 # LMZ：中文叙事图谱
 
+## 环境配置
+
+### 方法 1: 使用提供的环境文件（推荐）
+
+```bash
+# 创建环境
+conda env create -f narrative-map-environment.yml
+
+# 激活环境
+conda activate narrative-map
+```
+
 ![叙事图谱效果演示](imgs/demo.png)
 
 ## 开发阶段使用的预训练模型

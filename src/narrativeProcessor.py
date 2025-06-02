@@ -9,6 +9,7 @@ from sliceSentences import ChineseSentenceSegmenter
 from nonNEsKMeansMapper import nonNEsKMeansMapper
 from nonNEsHDBSCANMapper import nonNEsHDBSCANMapper
 from tqdm import tqdm
+from utils import get_most_important_word
 
 
 class NarrativeProcessor:
@@ -209,16 +210,22 @@ class NarrativeProcessor:
         i = 0
         print("三元组提取进程开始！")
         for idx, sentence_data in tqdm(processedData.items(), desc="三元组提取", total=len(processedData)):
-            # 使用sentences_df中存储的时间信息
             timeline = sentence_data['time']
             for srl_mapping in sentence_data['srl_mappings']:
-                # 创建角色词典以便查找
                 role_dict = {}
+                role_dict['timeline'] = timeline
                 for item in srl_mapping:
-                    role_dict['timeline'] = timeline
                     text, role, ner_info = item
+                    # 优先用实体，否则分词选关键词
                     if role in ['ARG0', 'PRED', 'ARG1']:
-                        role_dict[role] = (text, ner_info)
+                        if ner_info and 'entity_type' in ner_info and ner_info['entity_type'] != 'non-NE':
+                            node_text = text
+                            node_info = ner_info
+                        else:
+                            # 分词选关键词
+                            node_text = get_most_important_word(text)
+                            node_info = {'entity_type': 'non-NE'}
+                        role_dict[role] = (node_text, node_info)
                 narrative_triples[i] = role_dict
                 i += 1
         print("三元组提取完成！")
@@ -465,7 +472,7 @@ def main():
         cluster_algorithm='K-Means',
         min_cluster_size=5,
         min_samples=2)
-    result = processor.process(file_path=r'/home/ebit/narrative-map/data/coco.xlsx')
+    result = processor.process(file_path=r'/home/ebit/narrative-map/data/test.xlsx')
 
     # 获取时间范围
     start_time, end_time = processor.get_time_range(result)

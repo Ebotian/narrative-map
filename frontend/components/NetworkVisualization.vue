@@ -63,7 +63,7 @@ export default {
           color: getNodeColor(node.type),
           borderWidth: 2,
           font: { color: "black", multi: 'html', margin: 18, size: 16, face: 'Arial', vadjust: 0 },
-          title: `${node.id}\n类型: ${node.type}\n频次: ${node.value}` // 简化tooltip内容，去掉时间点
+          title: `${node.id}\n类型: ${node.type}\n频次: ${node.value}` // 只保留纯文本，不含label内容
         };
       });
     };

@@ -1,4 +1,6 @@
 import pandas as pd
+import hanlp
+import os
 
 # 将嵌套的三元组列表转换为简化格式的字典
 
@@ -165,3 +167,45 @@ def mapEntityNames(narrativeList, entity_mapping={}):
         mapped_tuples[key] = new_tuple
 
     return mapped_tuples
+
+# 加载停用词表
+STOPWORDS_PATH = os.path.join(os.path.dirname(__file__), '../hit_stopwords.txt')
+if os.path.exists(STOPWORDS_PATH):
+    with open(STOPWORDS_PATH, 'r', encoding='utf-8') as f:
+        STOPWORDS = set([line.strip() for line in f if line.strip()])
+else:
+    STOPWORDS = set()
+
+# HanLP分词和词性标注
+tokenizer = hanlp.load(hanlp.pretrained.mtl.CLOSE_TOK_POS_NER_SRL_DEP_SDP_CON_ERNIE_GRAM_ZH)
+
+def get_most_important_word(text):
+    """
+    对文本分词，优先返回第一个非停用词的名词/动词，否则返回第一个非停用词，否则返回最长的单个词（不返回原文整句）。
+    """
+    if not isinstance(text, str) or not text.strip():
+        return text
+    try:
+        result = tokenizer(text)
+        words = result['tok/fine'] if 'tok/fine' in result else result['tok/coarse']
+        pos = result['pos'] if 'pos' in result else None
+        # 优先名词/动词且非停用词
+        if pos:
+            for w, p in zip(words, pos):
+                if (p.startswith('N') or p.startswith('V')) and w not in STOPWORDS and len(w) <= 8:
+                    return w
+        # 其次非停用词且长度合理
+        for w in words:
+            if w not in STOPWORDS and len(w) <= 8:
+                return w
+        # 否则返回所有分词中最长且不超过12字的词
+        candidates = [w for w in words if len(w) <= 12]
+        if candidates:
+            return max(candidates, key=len)
+        # 若全为超长词，返回第一个词的前12字
+        if words:
+            return words[0][:12]
+    except Exception as e:
+        # 分词失败则返回原文前12字
+        return text[:12]
+    return text[:12]

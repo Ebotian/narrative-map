@@ -15,6 +15,6 @@ pyvis
 scipy
 setuptools
 spacy==3.8.7
-torch==2.7.0
+torch==2.7.1
 transformers==4.52.4
 umap-learn

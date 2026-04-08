@@ -16,5 +16,5 @@ scipy
 setuptools
 spacy==3.8.7
 torch==2.7.0
-transformers==4.52.4
+transformers==5.0.0rc3
 umap-learn
